@@ -4,9 +4,14 @@ import sys
 import uuid
 
 import dotenv
+from pydantic import SecretStr
 from langchain_community.docstore.document import Document
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, AIMessage
-from langchain_core.prompts import MessagesPlaceholder, ChatPromptTemplate, PromptTemplate
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from langchain_core.prompts import (
+    MessagesPlaceholder,
+    ChatPromptTemplate,
+    PromptTemplate,
+)
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
@@ -16,23 +21,36 @@ from qdrant_client.http.models import Distance, VectorParams
 # Load environment variables from .env file
 dotenv.load_dotenv()
 
+OPENAI_MODEL = os.getenv("OPENAI_MODEL")
+if OPENAI_MODEL is None:
+    print("Error: OPENAI_MODEL environment variable is not set.")
+    sys.exit(1)
+
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
+if OPENAI_BASE_URL is None:
+    print("Error: OPENAI_BASE_URL environment variable is not set.")
+    sys.exit(1)
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if OPENAI_API_KEY is None:
+    print("Error: OPENAI_API_KEY environment variable is not set.")
+    sys.exit(1)
+
 users = ["James", "George", "Mike", "Sherlock"]
 user_id = users[uuid.uuid4().int % len(users)]
-
 # Initialize the LLM with OpenAI API credentials (substitute for other models)
 llm = ChatOpenAI(
-    model=os.getenv("OPENAI_MODEL"),
-    base_url=os.getenv("OPENAI_BASE_URL"),
-    api_key=os.getenv("OPENAI_API_KEY")
+    model=OPENAI_MODEL, base_url=OPENAI_BASE_URL, api_key=SecretStr(OPENAI_API_KEY)
 )
 
 # Initialize the embeddings model with OpenAI API credentials
 embeddings_model = OpenAIEmbeddings(
     model="text-embedding-ada-002",
-    base_url=os.getenv("OPENAI_BASE_URL"),
-    api_key=os.getenv("OPENAI_API_KEY"),
+    base_url=OPENAI_BASE_URL,
+    api_key=SecretStr(OPENAI_API_KEY),
     show_progress_bar=True,
 )
+
 
 # Initialize conversation history
 conversation = []
@@ -41,6 +59,7 @@ conversation = []
 # ---------------------------
 # Load JSON Data and Build Qdrant Vector Store
 # ---------------------------
+
 
 def embed_documents(json_path: str):
     """
@@ -88,7 +107,9 @@ def embed_documents(json_path: str):
         collection_name = "smartphones"
         qdrant_client = QdrantClient("http://localhost:6333")
 
-        collection_exists = qdrant_client.collection_exists(collection_name=collection_name)
+        collection_exists = qdrant_client.collection_exists(
+            collection_name=collection_name
+        )
         if not collection_exists:
             qdrant_client.create_collection(
                 collection_name=collection_name,
@@ -101,7 +122,7 @@ def embed_documents(json_path: str):
             qdrant_store = QdrantVectorStore(
                 client=qdrant_client,
                 collection_name=collection_name,
-                embedding=embeddings_model
+                embedding=embeddings_model,
             )
 
             qdrant_store.add_documents(documents=documents)
@@ -138,6 +159,10 @@ def smartphone_info_tool(model: str) -> str:
              or an error message if not found or if an error occurs.
     """
     product_db = embed_documents("datasets/smartphones.json")
+
+    if isinstance(product_db, list):
+        return "Error: Could not initialize the vector database."
+
     try:
         results = product_db.similarity_search(model, k=1)
         if not results:
@@ -184,10 +209,11 @@ def generate_context(ai_message: AIMessage) -> dict:
     except Exception as e:
         print(f"An error occurred while processing tool calls: {e}")
         conversation.append(
-            AIMessage(
-                content=f"An error occurred while processing tool calls: {e}"
-            )
+            AIMessage(content=f"An error occurred while processing tool calls: {e}")
         )
+
+    # Return an empty dictionary as we're using conversation state via side effects
+    return {}
 
 
 # ---------------------------
@@ -238,20 +264,18 @@ def main():
     context_prompt = ChatPromptTemplate.from_messages(
         [
             (SystemMessage(context_system_prompt)),
-            MessagesPlaceholder(variable_name="conversation")
+            MessagesPlaceholder(variable_name="conversation"),
         ]
     )
 
     review_prompt = ChatPromptTemplate.from_messages(
         [
             (SystemMessage(review_system_prompt)),
-            MessagesPlaceholder(variable_name="conversation")
+            MessagesPlaceholder(variable_name="conversation"),
         ]
     )
 
-    goodbye_prompt = PromptTemplate.from_template(
-        goodbye_system_prompt
-    )
+    goodbye_prompt = PromptTemplate.from_template(goodbye_system_prompt)
 
     context_chain = context_prompt | llm_with_tools | generate_context
     review_chain = review_prompt | llm
@@ -259,7 +283,9 @@ def main():
     goodbye_chain = goodbye_prompt | llm
 
     try:
-        print("Welcome to the Smartphone Assistant! I can help you with smartphone features and comparisons.")
+        print(
+            "Welcome to the Smartphone Assistant! I can help you with smartphone features and comparisons."
+        )
         while True:
             user_input = input("User: ").strip()
             if user_input.lower() in ["exit", "quit", "bye", "end"]:
@@ -269,9 +295,17 @@ def main():
 
             conversation.append(HumanMessage(user_input))
 
-            context_chain.invoke({"user_input": user_input, "conversation": conversation})
+            context_chain.invoke(
+                {"user_input": user_input, "conversation": conversation}
+            )
 
-            response = review_chain.invoke({"user_id": user_id, "user_input": user_input, "conversation": conversation})
+            response = review_chain.invoke(
+                {
+                    "user_id": user_id,
+                    "user_input": user_input,
+                    "conversation": conversation,
+                }
+            )
 
             print(f"System: {response.content}")
             conversation.append(response)
